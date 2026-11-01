@@ -1,0 +1,179 @@
+diff --git a/pcsx2/GS/Renderers/SW/GSRasterizer.cpp b/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
+index ab36957..aa8a04e 100644
+--- a/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
++++ b/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
+@@ -15,6 +15,10 @@
+ 
+ #define ENABLE_DRAW_STATS 0
+ 
++#ifdef CHIMERA_BAND_RASTERIZER
++#include <waterbox_parallel.h>
++#endif
++
+ MULTI_ISA_UNSHARED_IMPL;
+ 
+ int GSRasterizerData::s_counter = 0;
+@@ -241,7 +245,10 @@ void GSRasterizer::Draw(GSRasterizerData& data)
+ 	_mm256_zeroupper();
+ #endif
+ 
+-	data.pixels = m_pixels.actual;
++	// chimera: with several rasterisers on one draw (the bands), each would
++	// store its own count here, and the last to finish would win.
++	if (m_threads == 1)
++		data.pixels = m_pixels.actual;
+ 
+ 	m_pixels.sum += m_pixels.actual;
+ 
+@@ -1599,10 +1606,98 @@ int GSRasterizerList::GetPixels(bool reset)
+ 	return pixels;
+ }
+ 
++#ifdef CHIMERA_BAND_RASTERIZER
++GSBandRasterizer::GSBandRasterizer()
++{
++	for (int i = 0; i < kBands; i++)
++		m_r[i] = std::make_unique<GSRasterizer>(&m_ds, i, kBands);
++	m_thread_height = compute_best_thread_height(kBands);
++	m_queue.reserve(kMaxQueued);
++}
++
++GSBandRasterizer::~GSBandRasterizer()
++{
++	Sync();
++}
++
++void GSBandRasterizer::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data)
++{
++	if (!m_ds.SetupDraw(*data.get())) [[unlikely]]
++	{
++		Sync();
++		m_ds.ResetCodeCache();
++		m_ds.SetupDraw(*data.get());
++	}
++
++	m_queue.push_back(data);
++	if (m_queue.size() >= kMaxQueued)
++		Sync();
++}
++
++void GSBandRasterizer::DrawBand(void* self, u32 band)
++{
++	GSBandRasterizer* const t = static_cast<GSBandRasterizer*>(self);
++	GSRasterizer& r = *t->m_r[band];
++	const int h = t->m_thread_height;
++	for (const GSRingHeap::SharedPtr<GSRasterizerData>& item : t->m_queue)
++	{
++		GSRasterizerData& data = *item.get();
++		// does this draw reach any scanline group this band owns?
++		const GSVector4i rc = data.bbox.rintersect(data.scissor);
++		int top = rc.top >> h;
++		const int bottom = (rc.bottom + (1 << h) - 1) >> h;
++		bool mine = false;
++		for (; top < bottom; top++)
++		{
++			if (top % kBands == static_cast<int>(band))
++			{
++				mine = true;
++				break;
++			}
++		}
++		if (mine)
++			r.Draw(data);
++	}
++}
++
++void GSBandRasterizer::Sync()
++{
++	if (m_queue.empty())
++		return;
++	wbx_parallel_for(&GSBandRasterizer::DrawBand, this, kBands);
++	// let go of the draws here, on the GS's thread: the ring heap and the
++	// renderer's page counts are touched by nobody else
++	m_queue.clear();
++	g_perfmon.Put(GSPerfMon::SyncPoint, 1);
++}
++
++bool GSBandRasterizer::IsSynced() const
++{
++	return m_queue.empty();
++}
++
++int GSBandRasterizer::GetPixels(bool reset)
++{
++	int pixels = 0;
++	for (int i = 0; i < kBands; i++)
++		pixels += m_r[i]->GetPixels(reset);
++	return pixels;
++}
++
++void GSBandRasterizer::PrintStats()
++{
++}
++#endif
++
+ std::unique_ptr<IRasterizer> GSRasterizerList::Create(int threads)
+ {
+ 	threads = std::max<int>(threads, 0);
+ 
++#ifdef CHIMERA_BAND_RASTERIZER
++	if (threads == 0)
++		return std::make_unique<GSBandRasterizer>();
++#endif
++
+ 	if (threads == 0)
+ 	{
+ 		return std::make_unique<GSSingleRasterizer>();
+diff --git a/pcsx2/GS/Renderers/SW/GSRasterizer.h b/pcsx2/GS/Renderers/SW/GSRasterizer.h
+index 1d0d844..67fa39f 100644
+--- a/pcsx2/GS/Renderers/SW/GSRasterizer.h
++++ b/pcsx2/GS/Renderers/SW/GSRasterizer.h
+@@ -167,6 +167,48 @@ private:
+ 	GSRasterizer m_r;
+ };
+ 
++#ifdef CHIMERA_BAND_RASTERIZER
++/* chimeraMTD (phase 1b): the rasteriser in fixed bands on miniBox's parallel
++ * tasks.
++ *
++ * GSRasterizerList's design, without its threads: kBands rasterisers, each
++ * owning every kBands-th group of 16 scanlines, as upstream's workers do. Draws
++ * are set up and queued on the GS's own thread and drawn at a flush, which is
++ * one wbx_parallel_for with one task per band; each task draws every queued
++ * draw that reaches its band, in queue order. A pixel belongs to exactly one
++ * band and is drawn in the order the GS was given, so the picture cannot depend
++ * on how many workers the host has. The band count is part of the machine; the
++ * worker count is not.
++ *
++ * A flush happens wherever upstream would Sync (a draw that reads or overlaps
++ * pages still being drawn, a transfer, vsync, a state) and when the queue is
++ * full. Nothing a task does reaches the queue or the ring heap: the draws are
++ * let go of here, after the join. */
++class GSBandRasterizer final : public IRasterizer
++{
++public:
++	static constexpr int kBands = 8;
++	static constexpr size_t kMaxQueued = 512;
++
++	GSBandRasterizer();
++	~GSBandRasterizer() override;
++
++	void Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data) override;
++	void Sync() override;
++	bool IsSynced() const override;
++	int GetPixels(bool reset = true) override;
++	void PrintStats() override;
++
++private:
++	static void DrawBand(void* self, u32 band);
++
++	GSDrawScanline m_ds;
++	std::unique_ptr<GSRasterizer> m_r[kBands];
++	std::vector<GSRingHeap::SharedPtr<GSRasterizerData>> m_queue;
++	int m_thread_height;
++};
++#endif
++
+ class GSRasterizerList final : public IRasterizer
+ {
+ protected:

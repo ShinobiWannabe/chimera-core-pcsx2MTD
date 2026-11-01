@@ -50,7 +50,7 @@ defs = [
   # to: GSDrawScanline::CDrawScanline is the C++ path this build takes.
   # -Djit_rasterizer=true takes the other one, for a NATIVE reference that says
   # whether the two agree (they must; run-gate.sh's rasteriser leg checks it).
-  '-DCHIMERA_SOFTWARE_ONLY', '-DCHIMERA_NO_INPUT_SOURCES', '-DCHIMERA_NO_GS_THREAD', '-DCHIMERA_NO_SHARED_MEMORY', '-DCHIMERA_FLAT_FILESYSTEM', '-DCHIMERA_MEMCARD_IN_MEMORY', '-DCHIMERA_NVRAM_IN_MEMORY', '-DCHIMERA_LAG_DETECTION',
+  '-DCHIMERA_SOFTWARE_ONLY', '-DCHIMERA_NO_INPUT_SOURCES', '-DCHIMERA_NO_GS_THREAD', '-DCHIMERA_BAND_RASTERIZER', '-DCHIMERA_NO_SHARED_MEMORY', '-DCHIMERA_FLAT_FILESYSTEM', '-DCHIMERA_MEMCARD_IN_MEMORY', '-DCHIMERA_NVRAM_IN_MEMORY', '-DCHIMERA_LAG_DETECTION',
   # The NAMCO System 246/256 boards: this package is a PlayStation 2 and the
   # three arcade machines Sony and NAMCO built out of one (waterbox/arcade/).
   # The define is what upstream's handful of hook sites are behind; which machine a
