@@ -46,10 +46,12 @@ defs = [
   '-DPCSX2_CORE',
   '-DCHIMERA_WATERBOX',
   # The software renderer generates its scanline routines at runtime through
-  # xbyak. A sandbox would rather not host a code generator, and does not have
-  # to: GSDrawScanline::CDrawScanline is the C++ path this build takes.
-  # -Djit_rasterizer=true takes the other one, for a NATIVE reference that says
-  # whether the two agree (they must; run-gate.sh's rasteriser leg checks it).
+  # xbyak, into the same executable code region the recompilers use. The
+  # processor it generates for is pinned (waterbox/host-sys.cpp), so the code
+  # is the same on every computer, and it is generated on the GS thread, never
+  # inside a parallel task. -Djit_rasterizer=false takes the C++ fallback,
+  # GSDrawScanline::CDrawScanline, for a reference that says whether the two
+  # agree (they must; run-gate.sh's rasteriser leg checks it).
   '-DCHIMERA_SOFTWARE_ONLY', '-DCHIMERA_NO_INPUT_SOURCES', '-DCHIMERA_NO_GS_THREAD', '-DCHIMERA_BAND_RASTERIZER', '-DCHIMERA_NO_SHARED_MEMORY', '-DCHIMERA_FLAT_FILESYSTEM', '-DCHIMERA_MEMCARD_IN_MEMORY', '-DCHIMERA_NVRAM_IN_MEMORY', '-DCHIMERA_LAG_DETECTION',
   # The NAMCO System 246/256 boards: this package is a PlayStation 2 and the
   # three arcade machines Sony and NAMCO built out of one (waterbox/arcade/).

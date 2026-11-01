@@ -24,6 +24,13 @@ code generator, and it does not have to: there is a pure C++ path,
 `GSDrawScanline::CDrawScanline`, selected when `ENABLE_JIT_RASTERIZER` is off.
 Slower, and correct.
 
+(Later: the sandbox turned out to host it fine. The code region the
+recompilers use is already executable, the processor the generator targets is
+pinned to SSE4, and generation happens on the GS thread, so the core now uses
+the code generator in the sandbox too: the same pictures, sound and memory as
+the C++ path, and about 14% faster God Hand gameplay. `-Djit_rasterizer=false`
+keeps the C++ path as the gate's reference.)
+
 **2. Can it build headless?** Yes, and there is a worked example in-tree:
 `pcsx2-gsrunner` is a headless application that drives the core to replay GS
 dumps, so the Host interface a frontend must implement (about 55 functions in

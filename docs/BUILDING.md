@@ -210,10 +210,11 @@ the first:
   looked for when a run starts, so a computer without it still builds and
   runs, and the Vulkan checks say SKIP there. The checks named `gpu:` and
   `vk:` use it.
-- `-Djit_rasterizer=true` makes a diagnostic reference that draws the
-  software renderer's scanlines with PCSX2's code generator instead of the
-  C++ path the core ships. One gate leg compares the two; it looks for that
-  build in `build/meson-jit`.
+- `-Djit_rasterizer=false` makes a reference that draws the software
+  renderer's scanlines with PCSX2's C++ fallback instead of the code
+  generator the core ships (in the sandbox too: the processor it generates
+  for is pinned, so every computer generates the same code). One gate leg
+  compares the two; it looks for that build in `build/meson-cpp-raster`.
 
 ### The guest core
 
@@ -368,7 +369,7 @@ own test program on its own disc (source, build and licence in
 | --- | --- |
 | `disc:boots`, `disc:equivalence` | a disc image: the first `*.bin` or `*.iso` in `tests/roms/` |
 | `discs:swap` | that disc and a bios; `PCSX2_SECOND_DISC` for a second game (else the first disc again, under another name): Disc Swap held for 60 frames changes the run, native == sandbox == a state around every frame, and a second "disc" that is no disc leaves the tray empty (chimera#286) |
-| `video:rasterisers` | a native build made with `-Djit_rasterizer=true` in `build/meson-jit`, or `CHIMERA_PS2_JIT_BUILD` |
+| `video:rasterisers` | a native build made with `-Djit_rasterizer=false` in `build/meson-cpp-raster`, or `CHIMERA_PS2_CPP_RASTER_BUILD` |
 | `gun:aims` | `PCSX2_GUN_DISC`, a GunCon 2 disc |
 | `gpu:picture` | `PCSX2_GFX_DISC` (and `PCSX2_GFX_FRAMES`), `run-wbx` built with `-Dgl_bridge=true`, and a GL context |
 | `gpu:bridge` | `run-wbx` built with `-Dgl_bridge=true`, a GL context, and a core built with the guest Mesa |
