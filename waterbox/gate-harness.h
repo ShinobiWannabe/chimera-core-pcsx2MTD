@@ -108,6 +108,8 @@ struct gate_opts
 	 * the answer is what the machine did about it. */
 	struct { int index; int value; } hold[GATE_MAX_PRESSES];
 	int holds;
+	const char *inputsPath; /* --inputs: one line per frame, "<wire>..." and "a<axis>=<value>" tokens */
+	long digestEvery;     /* --digest-every N: print running digests every N frames */
 	int turbo;            /* nonzero: draw nothing for the first half of the run */
 	long turboSettle;     /* frames to let the picture settle before hashing it */
 };
@@ -281,6 +283,10 @@ static int gate_run(const struct gate_core *c, const struct gate_opts *o)
 	long frames = o->frames;
 	if (sol.count > 0 && frames < sol.count)
 		frames = sol.count;
+	/* mt-phase0: a Chimera project's inputs, converted line per frame */
+	struct gate_sol inputs = { 0, 0 };
+	if (o->inputsPath && !gate_sol_load(o->inputsPath, &inputs))
+		return 1;
 
 	uint64_t vh = 0, ah = 0;
 	long long audioSamples = 0;
@@ -330,6 +336,24 @@ static int gate_run(const struct gate_core *c, const struct gate_opts *o)
 
 		for (int hi = 0; hi < o->holds && c->set_axis; hi++)
 			c->set_axis(o->hold[hi].index, o->hold[hi].value);
+
+		if (f < inputs.count)
+		{
+			char *line = inputs.lines[f];
+			for (char *t = strtok(line, " "); t; t = strtok(NULL, " "))
+			{
+				if (t[0] == 'a' && c->set_axis)
+				{
+					int ax = 0, v = 0;
+					if (sscanf(t, "a%d=%d", &ax, &v) == 2) c->set_axis(ax, v);
+				}
+				else if (t[0] >= '0' && t[0] <= '9')
+				{
+					int wi = atoi(t);
+					if (wi >= 0 && wi < GATE_WIRE_COUNT) buttons[wi] = 1;
+				}
+			}
+		}
 
 		if (o->wiggleAxes && c->set_axis)
 		{
@@ -384,6 +408,16 @@ static int gate_run(const struct gate_core *c, const struct gate_opts *o)
 		audioSamples += n;
 		if (!c->input_was_read())
 			lag++;
+		if (o->digestEvery > 0 && (f + 1) % o->digestEvery == 0)
+		{
+			uint64_t mh = 0;
+			int ndm = c->domain_count();
+			for (int i = 0; i < ndm; i++)
+				mh = gate_fnv(mh, c->domain_ptr(i), (size_t)c->domain_size(i));
+			printf("checkpoint frame=%ld video=%016llx audio=%016llx memory=%016llx lag=%ld\n", f + 1,
+				(unsigned long long)vh, (unsigned long long)ah, (unsigned long long)mh, lag);
+			fflush(stdout); /* a reader can time the checkpoints */
+		}
 		if (o->screenshotPath && f == frames - 1)
 			gate_write_tga(o->screenshotPath, video, w, h);
 
@@ -481,6 +515,8 @@ static int gate_parse_opts(int argc, char **argv, int first, struct gate_opts *o
 	o->wiggleAxes = 0;
 	o->presses = 0;
 	o->holds = 0;
+	o->inputsPath = NULL;
+	o->digestEvery = 0;
 	o->turbo = 0;
 	o->turboSettle = 0;
 	for (int i = first; i < argc; i++)
@@ -525,6 +561,8 @@ static int gate_parse_opts(int argc, char **argv, int first, struct gate_opts *o
 			o->holds++;
 		}
 		else if (!strcmp(argv[i], "--turbo")) o->turbo = 1;
+		else if (!strcmp(argv[i], "--inputs") && i + 1 < argc) o->inputsPath = argv[++i];
+		else if (!strcmp(argv[i], "--digest-every") && i + 1 < argc) o->digestEvery = strtol(argv[++i], 0, 0);
 		else if (!strcmp(argv[i], "--turbo-settle") && i + 1 < argc) o->turboSettle = strtol(argv[++i], 0, 0);		else if (!strcmp(argv[i], "--rerecord")) ; /* run-wbx's; ignored here */
 		else { fprintf(stderr, "unknown argument %s\n", argv[i]); return 0; }
 	}

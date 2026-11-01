@@ -422,6 +422,25 @@ int main(int argc, char **argv)
 	gl_report_unhandled();
 	vk_report_refused();
 
+	/* chimeraMTD: the WHOLE machine at the end of the run, as a savestate,
+	 * hashed (and written to CHIMERA_FINAL_STATE when set), so runs with
+	 * different worker counts can be compared byte for byte. */
+	if (ret == 0)
+	{
+		g_state.len = 0;
+		if (g_StateSaving && !getenv("CHIMERA_NO_STATE_SAVING")) g_StateSaving();
+		wbx_save_state(g_host, mem_write, (uintptr_t)&g_state, &r);
+		if (r.error_message[0]) { fprintf(stderr, "save_state: %s\n", r.error_message); return 1; }
+		uint64_t sh = gate_fnv(0, g_state.b, g_state.len);
+		printf("stateBytes=%llu\nstateHash=%016llx\n", (unsigned long long)g_state.len, (unsigned long long)sh);
+		const char *fs = getenv("CHIMERA_FINAL_STATE");
+		if (fs && *fs)
+		{
+			FILE *f = fopen(fs, "wb");
+			if (f) { fwrite(g_state.b, 1, g_state.len, f); fclose(f); }
+		}
+	}
+
 	wbx_deactivate_host(g_host, &r);
 	wbx_destroy_host(g_host, &r);
 	free(g_state.b);
