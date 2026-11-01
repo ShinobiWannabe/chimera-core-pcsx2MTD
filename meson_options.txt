@@ -8,3 +8,8 @@ option('gl_bridge', type: 'boolean', value: false,
 
 option('jit_rasterizer', type: 'boolean', value: true,
   description: 'Draw the software renderer\'s scanlines with PCSX2\'s own code generator (the default, in the sandbox too) rather than its C++ fallback. Both draw the same bytes; the generated code is faster. The code generator writes into the code region the recompilers already use, and the processor it targets is pinned (waterbox/host-sys.cpp), so every computer generates the same code. false builds the C++ path, which run-gate.sh\'s rasteriser leg compares against.')
+
+option('raster_bands', type: 'integer', min: 1, max: 64, value: 8,
+  description: 'How many bands the software rasteriser draws in, each on its own parallel task. Never the host\'s worker count: the picture is the same at any value, but the bands live in the machine\'s memory, so a different value is a different core identity (savestates do not cross). More bands only help a host with more cores than bands.')
+option('raster_band_height', type: 'integer', min: 0, max: 8, value: 0,
+  description: 'log2 of the scanlines in each band\'s strip; 0 keeps PCSX2\'s own (16 lines).')

@@ -1,0 +1,36 @@
+diff --git a/pcsx2/GS/Renderers/SW/GSRasterizer.cpp b/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
+index aa8a04e..fa1a420 100644
+--- a/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
++++ b/pcsx2/GS/Renderers/SW/GSRasterizer.cpp
+@@ -29,6 +29,10 @@ static int compute_best_thread_height(int threads)
+ 	// - but not too small to keep the threading overhead low
+ 	// - ideal value between 3 and 5, or log2(64 / number of threads)
+ 
++#if defined(CHIMERA_BAND_RASTERIZER) && defined(CHIMERA_RASTER_HEIGHT)
++	(void)threads;
++	return CHIMERA_RASTER_HEIGHT;
++#endif
+ 	int th = GSConfig.SWExtraThreadsHeight;
+ 
+ 	if (th > 0 && th < 9)
+diff --git a/pcsx2/GS/Renderers/SW/GSRasterizer.h b/pcsx2/GS/Renderers/SW/GSRasterizer.h
+index 67fa39f..d3a0472 100644
+--- a/pcsx2/GS/Renderers/SW/GSRasterizer.h
++++ b/pcsx2/GS/Renderers/SW/GSRasterizer.h
+@@ -187,7 +187,15 @@ private:
+ class GSBandRasterizer final : public IRasterizer
+ {
+ public:
+-	static constexpr int kBands = 8;
++	/* how many bands, and how tall a strip each owns (CHIMERA_RASTER_HEIGHT,
++	 * log2 of the scanlines in a strip): build settings, never the host's
++	 * worker count. Every pixel is drawn by exactly one band, in queue order,
++	 * so the picture is the same at any count; the machine's memory is not
++	 * (the bands live in it), so a count is part of the core's identity. */
++#ifndef CHIMERA_RASTER_BANDS
++#define CHIMERA_RASTER_BANDS 8
++#endif
++	static constexpr int kBands = CHIMERA_RASTER_BANDS;
+ 	static constexpr size_t kMaxQueued = 512;
+ 
+ 	GSBandRasterizer();

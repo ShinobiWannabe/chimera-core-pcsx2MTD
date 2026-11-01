@@ -89,6 +89,10 @@ defs = [
 if not get_option('jit_rasterizer')
   defs += '-DCHIMERA_NO_JIT_RASTERIZER'
 endif
+defs += '-DCHIMERA_RASTER_BANDS=@0@'.format(get_option('raster_bands'))
+if get_option('raster_band_height') > 0
+  defs += '-DCHIMERA_RASTER_HEIGHT=@0@'.format(get_option('raster_band_height'))
+endif
 # musl carries neither of these glibc extensions, and glibc has both - so this
 # is the one place the two flavors are compiled differently, and it is about
 # the C LIBRARY rather than about the machine. gettid becomes the sandbox's own
