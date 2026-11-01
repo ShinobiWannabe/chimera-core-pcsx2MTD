@@ -56,6 +56,78 @@
  * state saved with tracing off would otherwise turn it off again on load. */
 extern "C" int chimera_gs_trace;
 
+#include <waterbox_parallel.h>
+
+/* chimeraMTD (phase 1a): the display stage in bands of rows.
+ *
+ * Every routine below builds a destination row from source rows alone, and no
+ * two rows of one call write the same bytes, so the rows can be drawn on
+ * miniBox's parallel tasks (waterbox_parallel.h) with a picture that cannot
+ * depend on how many workers there are, or on which row finishes first. The
+ * band count is fixed, not the worker count. The one case that breaks the
+ * rule - a copy whose source IS its destination - stays on this thread.
+ *
+ * A task here allocates nothing, prints nothing and touches no errno, as the
+ * parallel rules require; the floating point control words are the caller's,
+ * which miniBox hands every worker (and the GS's, which PumpInline set). */
+namespace chimera_rows
+{
+	/* CHIMERA_ROWS_SERIAL=1 (native reference only: a guest has no
+	 * environment) draws every row here, in order: the reference the
+	 * parallel picture is compared with. */
+	inline bool getenv_serial()
+	{
+		static int v = -1;
+		if (v < 0)
+		{
+			const char* e = getenv("CHIMERA_ROWS_SERIAL");
+			v = (e && *e == '1') ? 1 : 0;
+		}
+		return v == 1;
+	}
+
+	constexpr int kBands = 16;
+	constexpr int kMinRowsToSplit = 32;
+
+	template <typename F>
+	struct Job
+	{
+		const F* fn;
+		int y0, y1;
+	};
+
+	template <typename F>
+	void RunBand(void* arg, uint32_t band)
+	{
+		const Job<F>* job = static_cast<const Job<F>*>(arg);
+		const int rows = job->y1 - job->y0;
+		const int a = job->y0 + static_cast<int>((static_cast<long long>(rows) * band) / kBands);
+		const int b = job->y0 + static_cast<int>((static_cast<long long>(rows) * (band + 1)) / kBands);
+		/* A copy of the row function on this task's own stack: its captures
+		 * (taken by value) then live in registers, where the row's byte stores
+		 * cannot be assumed to overwrite them. Through the shared pointer the
+		 * compiler must reload every one of them after every store. */
+		F local = *job->fn;
+		for (int y = a; y < b; y++)
+			local(y);
+	}
+
+	/* fn(y) for every y in [y0, y1). in_place: the source is the destination. */
+	template <typename F>
+	void ForRows(int y0, int y1, bool in_place, const F& fn)
+	{
+		if (in_place || y1 - y0 < kMinRowsToSplit || getenv_serial())
+		{
+			F local = fn;
+			for (int y = y0; y < y1; y++)
+				local(y);
+			return;
+		}
+		Job<F> job{&fn, y0, y1};
+		wbx_parallel_for(&RunBand<F>, &job, kBands);
+	}
+}
+
 namespace
 {
 	/* ---------------------------------------------------------------------
@@ -190,8 +262,7 @@ namespace
 		if (dw <= 0.0f || dh <= 0.0f)
 			return;
 
-		for (int dy = dy0; dy < dy1; dy++)
-		{
+		chimera_rows::ForRows(dy0, dy1, src == dst, [=](int dy) {
 			const float v = sv0 + (sv1 - sv0) * ((static_cast<float>(dy) + 0.5f - dRect.y) / dh);
 			const int sy = std::clamp(static_cast<int>(v), 0, ssize.y - 1);
 			const u8* srow = src->GetBits() + static_cast<size_t>(sy) * src->GetPitch();
@@ -201,9 +272,21 @@ namespace
 			{
 				const float u = su0 + (su1 - su0) * ((static_cast<float>(dx) + 0.5f - dRect.x) / dw);
 				const int sx = std::clamp(static_cast<int>(u), 0, ssize.x - 1);
-				std::memcpy(drow + static_cast<size_t>(dx) * bpp, srow + static_cast<size_t>(sx) * bpp, bpp);
+				/* a constant size, so the copy is a move and not a call into
+				 * libc per pixel (which is what a size the compiler cannot see
+				 * through the row function costs) */
+				u8* d = drow + static_cast<size_t>(dx) * bpp;
+				const u8* sp = srow + static_cast<size_t>(sx) * bpp;
+				switch (bpp)
+				{
+					case 4: std::memcpy(d, sp, 4); break;
+					case 1: std::memcpy(d, sp, 1); break;
+					case 2: std::memcpy(d, sp, 2); break;
+					case 8: std::memcpy(d, sp, 8); break;
+					default: std::memcpy(d, sp, bpp); break;
+				}
 			}
-		}
+		});
 	}
 
 	/* Reads one texel, clamped, as RGBA8. The interlace shaders are the only
@@ -253,10 +336,9 @@ namespace
 		if (dx1 <= dx0 || dy1 <= dy0 || dw <= 0.0f || dh <= 0.0f)
 			return;
 
-		for (int dy = dy0; dy < dy1; dy++)
-		{
+		chimera_rows::ForRows(dy0, dy1, src == dst, [=](int dy) {
 			if (fieldParity >= 0 && (dy & 1) != fieldParity)
-				continue;   /* discard: this line belongs to the other field */
+				return;   /* discard: this line belongs to the other field */
 
 			const float v = sv0 + (sv1 - sv0) * ((static_cast<float>(dy) + 0.5f - dRect.y) / dh) - 0.5f;
 			u8* drow = dst->GetBits() + static_cast<size_t>(dy) * dst->GetPitch();
@@ -289,7 +371,7 @@ namespace
 				for (int i = 0; i < 4; i++)
 					drow[static_cast<size_t>(dx) * 4 + i] = static_cast<u8>(std::clamp(rgba[i] + 0.5f, 0.0f, 255.0f));
 			}
-		}
+		});
 	}
 
 	/* ps_main3: the MAD buffer.
@@ -330,10 +412,9 @@ namespace
 		if (dx1 <= dx0 || dy1 <= dy0 || dw <= 0.0f || dh <= 0.0f)
 			return;
 
-		for (int dy = dy0; dy < dy1; dy++)
-		{
+		chimera_rows::ForRows(dy0, dy1, src == dst, [=](int dy) {
 			if (((dy + lofs) & 1) != field)
-				continue;   /* discard: this line belongs to the other field */
+				return;   /* discard: this line belongs to the other field */
 
 			const float v = sv0 + (sv1 - sv0) * ((static_cast<float>(dy) + 0.5f - dRect.y) / dh);
 			const int sy = std::clamp(static_cast<int>(v), 0, ssize.y - 1);
@@ -346,7 +427,7 @@ namespace
 				const int sx = std::clamp(static_cast<int>(u), 0, ssize.x - 1);
 				std::memcpy(drow + static_cast<size_t>(dx) * 4, srow + static_cast<size_t>(sx) * 4, 4);
 			}
-		}
+		});
 	}
 
 	/* ps_main4: the MAD reconstruction.
@@ -396,8 +477,7 @@ namespace
 
 		const int lastLine = dsize.y - 1;
 
-		for (int dy = dy0; dy < dy1; dy++)
-		{
+		chimera_rows::ForRows(dy0, dy1, src == dst, [=](int dy) {
 			u8* drow = dst->GetBits() + static_cast<size_t>(dy) * dst->GetPitch();
 			const bool haveIt = (dy & 1) == field;
 			/* The first and last lines have no pair to interpolate from, so
@@ -470,7 +550,7 @@ namespace
 				for (int i = 0; i < 4; i++)
 					drow[static_cast<size_t>(dx) * 4 + i] = static_cast<u8>(std::clamp(out[i] + 0.5f, 0.0f, 255.0f));
 			}
-		}
+		});
 	}
 
 	/* ps_main2: each output line is the weighted average of itself and the two
@@ -502,8 +582,7 @@ namespace
 		if (dx1 <= dx0 || dy1 <= dy0 || dw <= 0.0f || dh <= 0.0f)
 			return;
 
-		for (int dy = dy0; dy < dy1; dy++)
-		{
+		chimera_rows::ForRows(dy0, dy1, src == dst, [=](int dy) {
 			const float v = sv0 + (sv1 - sv0) * ((static_cast<float>(dy) + 0.5f - dRect.y) / dh) - 0.5f;
 			const int sy = static_cast<int>(std::floor(v + 0.5f));
 			u8* drow = dst->GetBits() + static_cast<size_t>(dy) * dst->GetPitch();
@@ -522,7 +601,7 @@ namespace
 					drow[static_cast<size_t>(dx) * 4 + i] = static_cast<u8>(std::clamp(blended + 0.5f, 0.0f, 255.0f));
 				}
 			}
-		}
+		});
 	}
 
 	/* ---------------------------------------------------------------------
