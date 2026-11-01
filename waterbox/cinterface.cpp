@@ -54,6 +54,7 @@
 #include "Config.h"
 #include "Elfheader.h"
 #include "GS/GS.h"
+#include "GS/ChimeraParallel.h"
 #include "GameDatabase.h"
 #include "Host.h"
 #include "IopMem.h"
@@ -2452,17 +2453,18 @@ ECL_EXPORT uint32_t* GetVideoBgra(void)
 	g_videoWidth = width;
 	g_videoHeight = height;
 
-	/* The GS device holds RGBA8; a frontend takes BGRA. */
-	for (int y = 0; y < height; y++)
-	{
+	/* The GS device holds RGBA8; a frontend takes BGRA. Rows are converted in
+	 * fixed shares on miniBox's parallel tasks: each row is its own output. */
+	uint32_t* const video = g_video;
+	chimera_par::For(height, 16, 32, [=](int y) {
 		const uint32_t* src = reinterpret_cast<const uint32_t*>(bits + static_cast<size_t>(y) * step * pitch);
-		uint32_t* dst = &g_video[static_cast<size_t>(y) * width];
+		uint32_t* dst = &video[static_cast<size_t>(y) * width];
 		for (int x = 0; x < width; x++)
 		{
 			const uint32_t p = src[x * step];
 			dst[x] = (p & 0xFF00FF00u) | ((p & 0x00FF0000u) >> 16) | ((p & 0x000000FFu) << 16);
 		}
-	}
+	});
 
 	return g_video;
 }
